@@ -122,7 +122,7 @@ def is_non_revenue(code):
 # ------------------------------------------------------------------
 # 3. UI
 # ------------------------------------------------------------------
-st.title("📊 Journal Revenue Summarizer")
+st.title("📊 Manual Posting Summarizer")
 st.caption("Upload PDF *Journal by Cashier and Transaction Code* untuk dijumlahkan per kategori.")
 
 # ---- Pengaturan kategori ----
