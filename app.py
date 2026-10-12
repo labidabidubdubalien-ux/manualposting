@@ -6,7 +6,7 @@ import pandas as pd
 import pdfplumber
 import streamlit as st
 
-st.set_page_config(page_title="Journal Revenue Summarizer", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Manual Posting Summarizer", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------
 # 1. PENGATURAN KATEGORI (default = aturan lama)
