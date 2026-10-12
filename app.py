@@ -226,13 +226,3 @@ st.subheader("Rincian per Kode Transaksi")
 pick = st.selectbox("Filter kategori", ["Semua"] + summary["Kategori"].tolist())
 view = by_code if pick == "Semua" else by_code[by_code["Kategori"] == pick]
 st.dataframe(view.style.format(fmt), use_container_width=True, hide_index=True)
-
-# ---- Download ----
-buf = io.BytesIO()
-with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-    summary.to_excel(xw, sheet_name="Ringkasan", index=False)
-    by_code.to_excel(xw, sheet_name="Per Kode", index=False)
-st.download_button(
-    "⬇️ Download Excel", buf.getvalue(), "ringkasan_revenue.xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
