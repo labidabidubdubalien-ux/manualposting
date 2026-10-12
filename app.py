@@ -9,7 +9,7 @@ import streamlit as st
 st.set_page_config(page_title="Journal Revenue Summarizer", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------
-# 1. PENGATURAN KATEGORI (default = aturan lama Anda)
+# 1. PENGATURAN KATEGORI (default = aturan lama)
 # ------------------------------------------------------------------
 DEFAULT_RULES = [
     ("Sugar & Spice", "sugar & spice, loyalty reward adjustment, bf package"),
@@ -71,8 +71,6 @@ def get_category(description, rules, fallback, exclude_kws):
 # ------------------------------------------------------------------
 NUM = r"-?\s?[\d,]+"
 HEADER_RE = re.compile(r"^Transaction Code\s+(\d{3,5})\s+(.+)$")
-TOTAL_RE = re.compile(rf"^Transaction Code\s*Total\s+({NUM})\s+({NUM})\s*$")
-GRAND_RE = re.compile(rf"^Grand Total\s+({NUM})\s+({NUM})\s*$")
 ROW_RE = re.compile(
     rf"^(\d{{2}}-\d{{2}}-\d{{2}})\s+(\d{{2}}:\d{{2}})\s+(\S+)\s+(.*?)\s+(\d{{3,5}})\s+"
     rf"(.*?)\s+(IDR|USD\S*)\s+({NUM})\s+({NUM})\s+(\S+)$"
@@ -86,7 +84,7 @@ def to_int(s):
 @st.cache_data(show_spinner=False)
 def parse_pdf(data: bytes):
     """Baca PDF sekali saja (kategori ditentukan terpisah, jadi aturan bisa diubah tanpa baca ulang)."""
-    rows, report_totals, grand = [], {}, None
+    rows = []
     cur_code, cur_desc = None, None
 
     with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -100,35 +98,19 @@ def parse_pdf(data: bytes):
                     cur_code, cur_desc = m.group(1), m.group(2).strip()
                     continue
 
-                m = TOTAL_RE.match(line)
-                if m and cur_code:
-                    report_totals[cur_code] = (to_int(m.group(1)), to_int(m.group(2)))
-                    continue
-
-                m = GRAND_RE.match(line)
-                if m:
-                    grand = (to_int(m.group(1)), to_int(m.group(2)))
-                    continue
-
                 m = ROW_RE.match(line)
                 if m and cur_code:
                     debit, credit = to_int(m.group(8)), to_int(m.group(9))
                     rows.append(
                         {
-                            "Date": m.group(1),
-                            "Time": m.group(2),
-                            "Room": m.group(3),
-                            "Name": m.group(4),
                             "Code": cur_code,
                             "Description": cur_desc,
-                            "Currency": m.group(7),
                             "Debit": debit,
                             "Credit": credit,
                             "Net": debit - credit,
-                            "Cash ID": m.group(10),
                         }
                     )
-    return pd.DataFrame(rows), report_totals, grand
+    return pd.DataFrame(rows)
 
 
 def is_non_revenue(code):
@@ -205,131 +187,51 @@ rules = parse_rules(edited)
 exclude_kws = split_keywords(exclude_text)
 
 uploaded = st.file_uploader("Upload PDF", type="pdf")
-include_non_rev = st.sidebar.checkbox(
-    "Sertakan Transfer (8370) & Pembayaran (9xxx)", value=False,
-    help="Default: dikeluarkan karena bukan revenue (cash, BCA, city ledger, dll).",
-)
-
 if not uploaded:
     st.info("Silakan upload file PDF terlebih dahulu.")
     st.stop()
 
 with st.spinner("Membaca PDF..."):
-    df, report_totals, grand = parse_pdf(uploaded.getvalue())
+    df = parse_pdf(uploaded.getvalue())
 
 if df.empty:
     st.error("Tidak ada transaksi yang terbaca. Pastikan formatnya sama dengan laporan Journal by Cashier and Transaction Code.")
     st.stop()
 
-# ---- Tentukan kategori ----
-cat_map = {
-    d: get_category(d, rules, fallback, exclude_kws) for d in df["Description"].unique()
-}
+# ---- Tentukan kategori & buang non-revenue ----
+cat_map = {d: get_category(d, rules, fallback, exclude_kws) for d in df["Description"].unique()}
 df["Kategori"] = df["Description"].map(cat_map)
-df = df[["Date", "Time", "Room", "Name", "Code", "Description", "Kategori",
-         "Currency", "Debit", "Credit", "Net", "Cash ID"]]
 
-# ---- Rekonsiliasi dengan total di laporan ----
-# Laporan menjumlahkan nilai desimal asli, sedangkan PDF hanya menampilkan angka bulat,
-# jadi selisih beberapa rupiah per kode adalah pembulatan biasa.
-TOLERANCE = 50
-calc = df.groupby("Code")[["Debit", "Credit"]].sum()
-recon = []
-for code, (d, c) in report_totals.items():
-    cd = int(calc.loc[code, "Debit"]) if code in calc.index else 0
-    cc = int(calc.loc[code, "Credit"]) if code in calc.index else 0
-    if cd != d or cc != c:
-        recon.append({"Code": code, "Debit laporan": d, "Debit hitung": cd,
-                      "Credit laporan": c, "Credit hitung": cc,
-                      "Selisih": max(abs(cd - d), abs(cc - c))})
+work = df[(df["Kategori"] != EXCLUDED_LABEL) & ~df["Code"].apply(is_non_revenue)]
+if work.empty:
+    st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, dan Pembayaran dikeluarkan.")
+    st.stop()
 
-# ---- Filter revenue ----
-is_excl = df["Kategori"] == EXCLUDED_LABEL          # tax / service charge -> bukan revenue
-is_pay = df["Code"].apply(is_non_revenue)           # transfer & pembayaran
-work = df[~is_excl] if include_non_rev else df[~is_excl & ~is_pay]
-payments = df[is_pay & ~is_excl]
-excluded = df[is_excl]
+fmt = {"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
 
-# ---- Ringkasan ----
+# ---- 1. Ringkasan per Kategori ----
 summary = (
     work.groupby("Kategori")[["Debit", "Credit", "Net"]].sum()
     .sort_values("Net", ascending=False).reset_index()
 )
+st.subheader("Ringkasan per Kategori")
+st.dataframe(summary.style.format(fmt), use_container_width=True, hide_index=True)
+
+# ---- 2. Rincian per Kode Transaksi ----
 by_code = (
     work.groupby(["Kategori", "Code", "Description"])[["Debit", "Credit", "Net"]]
     .sum().reset_index().sort_values(["Kategori", "Code"])
 )
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Total Net Revenue", f"Rp {work['Net'].sum():,.0f}")
-c2.metric("Jumlah transaksi", f"{len(work):,}")
-c3.metric("Jumlah kategori", summary.shape[0])
-if not excluded.empty:
-    st.caption(
-        f"Tidak termasuk revenue: {len(excluded):,} transaksi Tax / Service Charge "
-        f"(Net Rp {excluded['Net'].sum():,.0f})."
-    )
-
-st.subheader("Ringkasan per Kategori")
-fmt = {"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
-left, right = st.columns([3, 2])
-left.dataframe(summary.style.format(fmt), use_container_width=True, hide_index=True)
-right.bar_chart(summary.set_index("Kategori")["Net"])
-
 st.subheader("Rincian per Kode Transaksi")
-cats = ["Semua"] + summary["Kategori"].tolist()
-pick = st.selectbox("Filter kategori", cats)
+pick = st.selectbox("Filter kategori", ["Semua"] + summary["Kategori"].tolist())
 view = by_code if pick == "Semua" else by_code[by_code["Kategori"] == pick]
 st.dataframe(view.style.format(fmt), use_container_width=True, hide_index=True)
-
-with st.expander("Detail seluruh transaksi"):
-    detail = work if pick == "Semua" else work[work["Kategori"] == pick]
-    st.dataframe(detail.style.format(fmt), use_container_width=True, hide_index=True)
-
-# Bantu menentukan kategori: kode yang jatuh ke kategori default
-unassigned = work[work["Kategori"] == fallback]
-if not unassigned.empty:
-    with st.expander(f"Kode transaksi di kategori default “{fallback}” (bisa Anda kategorikan)"):
-        un = unassigned.groupby(["Code", "Description"])[["Debit", "Credit", "Net"]].sum().reset_index()
-        st.dataframe(un.style.format(fmt), use_container_width=True, hide_index=True)
-
-if not excluded.empty:
-    with st.expander("Tax / Service Charge (tidak masuk revenue)"):
-        ex = excluded.groupby(["Code", "Description"])[["Debit", "Credit", "Net"]].sum().reset_index()
-        st.dataframe(ex.style.format(fmt), use_container_width=True, hide_index=True)
-
-if not payments.empty:
-    with st.expander("Transfer & Pembayaran (tidak masuk revenue)"):
-        pay = payments.groupby(["Code", "Description"])[["Debit", "Credit", "Net"]].sum().reset_index()
-        st.dataframe(pay.style.format(fmt), use_container_width=True, hide_index=True)
-
-# ---- Validasi (memakai SEMUA transaksi, termasuk tax/service charge) ----
-st.subheader("Validasi terhadap total laporan")
-if not recon:
-    st.success("Semua total per kode transaksi sama persis dengan laporan PDF ✅")
-elif max(r["Selisih"] for r in recon) <= TOLERANCE:
-    st.success("Total cocok dengan laporan PDF (selisih hanya pembulatan beberapa rupiah) ✅")
-    with st.expander("Lihat selisih pembulatan"):
-        st.dataframe(pd.DataFrame(recon), use_container_width=True, hide_index=True)
-else:
-    st.warning("Ada kode transaksi dengan selisih besar, kemungkinan ada baris yang tidak terbaca:")
-    st.dataframe(pd.DataFrame(recon), use_container_width=True, hide_index=True)
-if grand:
-    gd, gc = int(df["Debit"].sum()), int(df["Credit"].sum())
-    ok = abs(gd - grand[0]) <= TOLERANCE and abs(gc - grand[1]) <= TOLERANCE
-    (st.success if ok else st.warning)(
-        f"Grand Total laporan: Debit {grand[0]:,} / Credit {grand[1]:,} — "
-        f"hasil hitung: Debit {gd:,} / Credit {gc:,}"
-    )
 
 # ---- Download ----
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine="openpyxl") as xw:
     summary.to_excel(xw, sheet_name="Ringkasan", index=False)
     by_code.to_excel(xw, sheet_name="Per Kode", index=False)
-    work.to_excel(xw, sheet_name="Detail", index=False)
-    if not excluded.empty:
-        excluded.to_excel(xw, sheet_name="Tax & Service (excluded)", index=False)
 st.download_button(
     "⬇️ Download Excel", buf.getvalue(), "ringkasan_revenue.xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
