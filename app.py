@@ -21,12 +21,16 @@ DEFAULT_RULES = [
     ("Spa", "spa"),
     ("Guest Laundry", "laundry"),
     ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
-    ("Other Revenue", "miscellaneous w/ tax"),
+    ("Other Revenue", "miscellaneous"),
 ]
 DEFAULT_FALLBACK = ""  # kosong = transaksi yang tidak cocok TIDAK ditarik
 NOT_PULLED_LABEL = "Tidak Ditarik"
 DEFAULT_EXCLUDE = "tax, service charge"
 EXCLUDED_LABEL = "Tax / Service Charge"
+
+# Deskripsi yang TETAP dihitung sebagai revenue walaupun mengandung kata dari daftar pengecualian
+# (misalnya "Miscellaneous w/ Tax" mengandung kata "tax" tetapi harus masuk Other Revenue).
+KEEP_DESPITE_EXCLUDE = [r"miscellaneous\s+w/\s*tax"]
 
 
 def default_rules_df():
@@ -58,7 +62,8 @@ def is_excluded(description, exclude_kws):
 
 
 def get_category(description, rules, fallback, exclude_kws):
-    if is_excluded(description, exclude_kws):
+    keep = any(re.search(p, description, flags=re.IGNORECASE) for p in KEEP_DESPITE_EXCLUDE)
+    if not keep and is_excluded(description, exclude_kws):
         return EXCLUDED_LABEL
     desc_lower = description.lower()
     for name, kws in rules:
