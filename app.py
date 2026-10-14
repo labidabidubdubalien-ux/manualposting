@@ -11,7 +11,7 @@ st.set_page_config(page_title="Manual Posting Summarizer", page_icon="📊", lay
 # 1. PENGATURAN KATEGORI (default = aturan lama)
 # ------------------------------------------------------------------
 DEFAULT_RULES = [
-    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment, bf package"),
+    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment"),
     ("Shio", "shio"),
     ("The Lounge", "lobby lounge"),
     ("In-Room Dining", "room service"),
@@ -23,8 +23,8 @@ DEFAULT_RULES = [
     ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
 ]
 DEFAULT_FALLBACK = "Other Revenue"
-DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding"
-EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding"
+DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package"
+EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package"
 
 KEEP_PHRASES = ["miscellaneous w/ tax"]
 
