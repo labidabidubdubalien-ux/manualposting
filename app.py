@@ -12,7 +12,7 @@ st.set_page_config(page_title="Manual Posting Summarizer", page_icon="📊", lay
 # 1. PENGATURAN KATEGORI (default = aturan lama)
 # ------------------------------------------------------------------
 DEFAULT_RULES = [
-    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment, bf package"),
+    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment"),
     ("Shio", "shio"),
     ("The Lounge", "lobby lounge"),
     ("In-Room Dining", "room service"),
@@ -23,7 +23,8 @@ DEFAULT_RULES = [
     ("Guest Laundry", "laundry"),
     ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
 ]
-DEFAULT_FALLBACK = "Other Revenue"
+DEFAULT_FALLBACK = ""  # kosong = transaksi yang tidak cocok TIDAK ditarik
+NOT_PULLED_LABEL = "Tidak Ditarik"
 DEFAULT_EXCLUDE = "tax, service charge"
 EXCLUDED_LABEL = "Tax / Service Charge"
 
@@ -63,7 +64,7 @@ def get_category(description, rules, fallback, exclude_kws):
     for name, kws in rules:
         if any(kw in desc_lower for kw in kws):
             return name
-    return fallback
+    return fallback or NOT_PULLED_LABEL
 
 
 # ------------------------------------------------------------------
@@ -150,7 +151,9 @@ with st.expander("⚙️ Pengaturan kategori", expanded=False):
         },
     )
     c_a, c_b = st.columns(2)
-    fallback = c_a.text_input("Kategori default (jika tidak ada yang cocok)", value=ss.fallback).strip() or DEFAULT_FALLBACK
+    fallback = c_a.text_input(
+        "Kategori default (kosongkan = yang tidak cocok tidak ditarik)", value=ss.fallback
+    ).strip()
     exclude_text = c_b.text_input(
         "Dikecualikan dari revenue (kata kunci)", value=ss.exclude_text,
         help="Deskripsi yang mengandung kata ini (kata utuh) tidak dihitung sebagai revenue.",
@@ -202,9 +205,9 @@ if df.empty:
 cat_map = {d: get_category(d, rules, fallback, exclude_kws) for d in df["Description"].unique()}
 df["Kategori"] = df["Description"].map(cat_map)
 
-work = df[(df["Kategori"] != EXCLUDED_LABEL) & ~df["Code"].apply(is_non_revenue)]
+work = df[~df["Kategori"].isin([EXCLUDED_LABEL, NOT_PULLED_LABEL]) & ~df["Code"].apply(is_non_revenue)]
 if work.empty:
-    st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, dan Pembayaran dikeluarkan.")
+    st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, Pembayaran, dan kategori yang tidak ditarik dikeluarkan.")
     st.stop()
 
 fmt = {"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
