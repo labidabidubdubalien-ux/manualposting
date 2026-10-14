@@ -1,7 +1,6 @@
 import io
 import json
 import re
-
 import pandas as pd
 import pdfplumber
 import streamlit as st
@@ -207,6 +206,21 @@ cat_map = {d: get_category(d, rules, fallback, exclude_kws) for d in df["Descrip
 df["Kategori"] = df["Description"].map(cat_map)
 
 work = df[~df["Kategori"].isin([EXCLUDED_LABEL, NOT_PULLED_LABEL]) & ~df["Code"].apply(is_non_revenue)]
+
+# ---- Cek transaksi yang TIDAK ditarik (untuk melacak kategori yang tidak terdeteksi) ----
+skipped = df.drop(work.index).copy()
+if not skipped.empty:
+    skipped["Alasan"] = skipped.apply(
+        lambda r: "Transfer / Pembayaran (kode 8370 / 9xxx)" if is_non_revenue(r["Code"])
+        else ("Tax / Service Charge" if r["Kategori"] == EXCLUDED_LABEL else "Tidak cocok kategori mana pun"),
+        axis=1,
+    )
+    with st.expander("🔍 Transaksi yang tidak ditarik (cek di sini jika ada kategori yang tidak terdeteksi)"):
+        st.dataframe(
+            skipped.groupby(["Alasan", "Code", "Description"])[["Debit", "Credit", "Net"]]
+            .sum().reset_index().style.format({"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}),
+            use_container_width=True, hide_index=True,
+        )
 if work.empty:
     st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, Pembayaran, dan kategori yang tidak ditarik dikeluarkan.")
     st.stop()
