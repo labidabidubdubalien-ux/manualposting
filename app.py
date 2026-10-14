@@ -23,8 +23,8 @@ DEFAULT_RULES = [
     ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
 ]
 DEFAULT_FALLBACK = "Other Revenue"
-DEFAULT_EXCLUDE = "tax, service charge"
-EXCLUDED_LABEL = "Tax / Service Charge"
+DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding"
+EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding"
 
 
 def default_rules_df():
