@@ -12,7 +12,7 @@ st.set_page_config(page_title="Manual Posting Summarizer", page_icon="📊", lay
 # 1. PENGATURAN KATEGORI (default = aturan lama)
 # ------------------------------------------------------------------
 DEFAULT_RULES = [
-    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment"),
+    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment, bf package"),
     ("Shio", "shio"),
     ("The Lounge", "lobby lounge"),
     ("In-Room Dining", "room service"),
@@ -22,16 +22,10 @@ DEFAULT_RULES = [
     ("Spa", "spa"),
     ("Guest Laundry", "laundry"),
     ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
-    ("Other Revenue", "miscellaneous"),
 ]
-DEFAULT_FALLBACK = ""  # kosong = transaksi yang tidak cocok TIDAK ditarik
-NOT_PULLED_LABEL = "Tidak Ditarik"
+DEFAULT_FALLBACK = "Other Revenue"
 DEFAULT_EXCLUDE = "tax, service charge"
 EXCLUDED_LABEL = "Tax / Service Charge"
-
-# Deskripsi yang TETAP dihitung sebagai revenue walaupun mengandung kata dari daftar pengecualian
-# (misalnya "Miscellaneous w/ Tax" mengandung kata "tax" tetapi harus masuk Other Revenue).
-KEEP_DESPITE_EXCLUDE = [r"miscellaneous\s+w/\s*tax"]
 
 
 def default_rules_df():
@@ -63,14 +57,13 @@ def is_excluded(description, exclude_kws):
 
 
 def get_category(description, rules, fallback, exclude_kws):
-    keep = any(re.search(p, description, flags=re.IGNORECASE) for p in KEEP_DESPITE_EXCLUDE)
-    if not keep and is_excluded(description, exclude_kws):
+    if is_excluded(description, exclude_kws):
         return EXCLUDED_LABEL
     desc_lower = description.lower()
     for name, kws in rules:
         if any(kw in desc_lower for kw in kws):
             return name
-    return fallback or NOT_PULLED_LABEL
+    return fallback
 
 
 # ------------------------------------------------------------------
@@ -84,9 +77,6 @@ ROW_RE = re.compile(
 )
 
 
-LOOKS_LIKE_ROW = re.compile(r"^\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}\s")
-
-
 def to_int(s):
     return int(s.replace(" ", "").replace(",", ""))
 
@@ -95,7 +85,6 @@ def to_int(s):
 def parse_pdf(data: bytes):
     """Baca PDF sekali saja (kategori ditentukan terpisah, jadi aturan bisa diubah tanpa baca ulang)."""
     rows = []
-    unparsed = []  # baris yang tampak seperti transaksi tapi gagal dibaca
     cur_code, cur_desc = None, None
 
     with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -110,9 +99,6 @@ def parse_pdf(data: bytes):
                     continue
 
                 m = ROW_RE.match(line)
-                if not m and LOOKS_LIKE_ROW.match(line):
-                    unparsed.append({"Code": cur_code, "Description": cur_desc, "Baris": line})
-                    continue
                 if m and cur_code:
                     debit, credit = to_int(m.group(8)), to_int(m.group(9))
                     rows.append(
@@ -124,7 +110,7 @@ def parse_pdf(data: bytes):
                             "Net": debit - credit,
                         }
                     )
-    return pd.DataFrame(rows), unparsed
+    return pd.DataFrame(rows)
 
 
 def is_non_revenue(code):
@@ -164,9 +150,7 @@ with st.expander("⚙️ Pengaturan kategori", expanded=False):
         },
     )
     c_a, c_b = st.columns(2)
-    fallback = c_a.text_input(
-        "Kategori default (kosongkan = yang tidak cocok tidak ditarik)", value=ss.fallback
-    ).strip()
+    fallback = c_a.text_input("Kategori default (jika tidak ada yang cocok)", value=ss.fallback).strip() or DEFAULT_FALLBACK
     exclude_text = c_b.text_input(
         "Dikecualikan dari revenue (kata kunci)", value=ss.exclude_text,
         help="Deskripsi yang mengandung kata ini (kata utuh) tidak dihitung sebagai revenue.",
@@ -208,50 +192,26 @@ if not uploaded:
     st.stop()
 
 with st.spinner("Membaca PDF..."):
-    df, unparsed = parse_pdf(uploaded.getvalue())
+    df = parse_pdf(uploaded.getvalue())
 
 if df.empty:
     st.error("Tidak ada transaksi yang terbaca. Pastikan formatnya sama dengan laporan Journal by Cashier and Transaction Code.")
     st.stop()
 
-if unparsed:
-    st.warning(
-        f"⚠️ {len(unparsed)} baris transaksi tidak berhasil dibaca sehingga TIDAK ikut dijumlahkan. "
-        "Ini bisa membuat total salah."
-    )
-    with st.expander("Lihat baris yang tidak terbaca"):
-        st.dataframe(pd.DataFrame(unparsed), use_container_width=True, hide_index=True)
-
 # ---- Tentukan kategori & buang non-revenue ----
 cat_map = {d: get_category(d, rules, fallback, exclude_kws) for d in df["Description"].unique()}
 df["Kategori"] = df["Description"].map(cat_map)
 
-work = df[~df["Kategori"].isin([EXCLUDED_LABEL, NOT_PULLED_LABEL]) & ~df["Code"].apply(is_non_revenue)]
-
-# ---- Cek transaksi yang TIDAK ditarik (untuk melacak kategori yang tidak terdeteksi) ----
-skipped = df.drop(work.index).copy()
-if not skipped.empty:
-    skipped["Alasan"] = skipped.apply(
-        lambda r: "Transfer / Pembayaran (kode 8370 / 9xxx)" if is_non_revenue(r["Code"])
-        else ("Tax / Service Charge" if r["Kategori"] == EXCLUDED_LABEL else "Tidak cocok kategori mana pun"),
-        axis=1,
-    )
-    with st.expander("🔍 Transaksi yang tidak ditarik (cek di sini jika ada kategori yang tidak terdeteksi)"):
-        st.dataframe(
-            skipped.groupby(["Alasan", "Code", "Description"])[["Debit", "Credit", "Net"]]
-            .sum().reset_index().style.format({"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}),
-            use_container_width=True, hide_index=True,
-        )
+work = df[(df["Kategori"] != EXCLUDED_LABEL) & ~df["Code"].apply(is_non_revenue)]
 if work.empty:
-    st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, Pembayaran, dan kategori yang tidak ditarik dikeluarkan.")
+    st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, dan Pembayaran dikeluarkan.")
     st.stop()
 
-fmt = {"Jumlah": "{:,.0f}", "Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
+fmt = {"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
 
 # ---- 1. Ringkasan per Kategori ----
 summary = (
-    work.groupby("Kategori")
-    .agg(Jumlah=("Net", "size"), Debit=("Debit", "sum"), Credit=("Credit", "sum"), Net=("Net", "sum"))
+    work.groupby("Kategori")[["Debit", "Credit", "Net"]].sum()
     .sort_values("Net", ascending=False).reset_index()
 )
 st.subheader("Ringkasan per Kategori")
@@ -259,11 +219,20 @@ st.dataframe(summary.style.format(fmt), use_container_width=True, hide_index=Tru
 
 # ---- 2. Rincian per Kode Transaksi ----
 by_code = (
-    work.groupby(["Kategori", "Code", "Description"])
-    .agg(Jumlah=("Net", "size"), Debit=("Debit", "sum"), Credit=("Credit", "sum"), Net=("Net", "sum"))
-    .reset_index().sort_values(["Kategori", "Code"])
+    work.groupby(["Kategori", "Code", "Description"])[["Debit", "Credit", "Net"]]
+    .sum().reset_index().sort_values(["Kategori", "Code"])
 )
 st.subheader("Rincian per Kode Transaksi")
 pick = st.selectbox("Filter kategori", ["Semua"] + summary["Kategori"].tolist())
 view = by_code if pick == "Semua" else by_code[by_code["Kategori"] == pick]
 st.dataframe(view.style.format(fmt), use_container_width=True, hide_index=True)
+
+# ---- Download ----
+buf = io.BytesIO()
+with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+    summary.to_excel(xw, sheet_name="Ringkasan", index=False)
+    by_code.to_excel(xw, sheet_name="Per Kode", index=False)
+st.download_button(
+    "⬇️ Download Excel", buf.getvalue(), "ringkasan_revenue.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
