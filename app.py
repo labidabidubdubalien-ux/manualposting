@@ -25,7 +25,23 @@ DEFAULT_RULES = [
 DEFAULT_FALLBACK = "Other Revenue"
 DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding"
 EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding"
+KEEP_PHRASES = ["miscellaneous w/ tax"]
 
+
+def get_category(description, rules, fallback, exclude_kws):
+    desc_lower = description.lower()
+
+    check_text = desc_lower
+    for p in KEEP_PHRASES:
+        check_text = check_text.replace(p, " ")
+
+    if is_excluded(check_text, exclude_kws):
+        return EXCLUDED_LABEL
+
+    for name, kws in rules:
+        if any(kw in desc_lower for kw in kws):
+            return name
+    return fallback
 
 def default_rules_df():
     return pd.DataFrame(DEFAULT_RULES, columns=["Kategori", "Keyword"])
