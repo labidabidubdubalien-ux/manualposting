@@ -11,7 +11,7 @@ st.set_page_config(page_title="Manual Posting Summarizer", page_icon="📊", lay
 # 1. PENGATURAN KATEGORI (default = aturan lama)
 # ------------------------------------------------------------------
 DEFAULT_RULES = [
-    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment, bf package"),
+    ("Sugar & Spice", "sugar & spice, loyalty reward adjustment, bf package, miscellaneous w/ tax"),
     ("Shio", "shio"),
     ("The Lounge", "lobby lounge"),
     ("In-Room Dining", "room service"),
