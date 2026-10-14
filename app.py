@@ -21,7 +21,7 @@ DEFAULT_RULES = [
     ("Spa", "spa"),
     ("Guest Laundry", "laundry"),
     ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
-    ("Other Revenue", "miscellaneous"),
+    ("Other Revenue", "miscellaneous w/ tax"),
 ]
 DEFAULT_FALLBACK = ""  # kosong = transaksi yang tidak cocok TIDAK ditarik
 NOT_PULLED_LABEL = "Tidak Ditarik"
