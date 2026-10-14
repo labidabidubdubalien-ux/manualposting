@@ -84,6 +84,9 @@ ROW_RE = re.compile(
 )
 
 
+LOOKS_LIKE_ROW = re.compile(r"^\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}\s")
+
+
 def to_int(s):
     return int(s.replace(" ", "").replace(",", ""))
 
@@ -92,6 +95,7 @@ def to_int(s):
 def parse_pdf(data: bytes):
     """Baca PDF sekali saja (kategori ditentukan terpisah, jadi aturan bisa diubah tanpa baca ulang)."""
     rows = []
+    unparsed = []  # baris yang tampak seperti transaksi tapi gagal dibaca
     cur_code, cur_desc = None, None
 
     with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -106,6 +110,9 @@ def parse_pdf(data: bytes):
                     continue
 
                 m = ROW_RE.match(line)
+                if not m and LOOKS_LIKE_ROW.match(line):
+                    unparsed.append({"Code": cur_code, "Description": cur_desc, "Baris": line})
+                    continue
                 if m and cur_code:
                     debit, credit = to_int(m.group(8)), to_int(m.group(9))
                     rows.append(
@@ -117,7 +124,7 @@ def parse_pdf(data: bytes):
                             "Net": debit - credit,
                         }
                     )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), unparsed
 
 
 def is_non_revenue(code):
@@ -201,11 +208,19 @@ if not uploaded:
     st.stop()
 
 with st.spinner("Membaca PDF..."):
-    df = parse_pdf(uploaded.getvalue())
+    df, unparsed = parse_pdf(uploaded.getvalue())
 
 if df.empty:
     st.error("Tidak ada transaksi yang terbaca. Pastikan formatnya sama dengan laporan Journal by Cashier and Transaction Code.")
     st.stop()
+
+if unparsed:
+    st.warning(
+        f"⚠️ {len(unparsed)} baris transaksi tidak berhasil dibaca sehingga TIDAK ikut dijumlahkan. "
+        "Ini bisa membuat total salah."
+    )
+    with st.expander("Lihat baris yang tidak terbaca"):
+        st.dataframe(pd.DataFrame(unparsed), use_container_width=True, hide_index=True)
 
 # ---- Tentukan kategori & buang non-revenue ----
 cat_map = {d: get_category(d, rules, fallback, exclude_kws) for d in df["Description"].unique()}
@@ -231,11 +246,12 @@ if work.empty:
     st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, Pembayaran, dan kategori yang tidak ditarik dikeluarkan.")
     st.stop()
 
-fmt = {"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
+fmt = {"Jumlah": "{:,.0f}", "Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
 
 # ---- 1. Ringkasan per Kategori ----
 summary = (
-    work.groupby("Kategori")[["Debit", "Credit", "Net"]].sum()
+    work.groupby("Kategori")
+    .agg(Jumlah=("Net", "size"), Debit=("Debit", "sum"), Credit=("Credit", "sum"), Net=("Net", "sum"))
     .sort_values("Net", ascending=False).reset_index()
 )
 st.subheader("Ringkasan per Kategori")
@@ -243,8 +259,9 @@ st.dataframe(summary.style.format(fmt), use_container_width=True, hide_index=Tru
 
 # ---- 2. Rincian per Kode Transaksi ----
 by_code = (
-    work.groupby(["Kategori", "Code", "Description"])[["Debit", "Credit", "Net"]]
-    .sum().reset_index().sort_values(["Kategori", "Code"])
+    work.groupby(["Kategori", "Code", "Description"])
+    .agg(Jumlah=("Net", "size"), Debit=("Debit", "sum"), Credit=("Credit", "sum"), Net=("Net", "sum"))
+    .reset_index().sort_values(["Kategori", "Code"])
 )
 st.subheader("Rincian per Kode Transaksi")
 pick = st.selectbox("Filter kategori", ["Semua"] + summary["Kategori"].tolist())
