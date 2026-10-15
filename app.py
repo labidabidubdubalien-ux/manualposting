@@ -24,8 +24,8 @@ DEFAULT_RULES = [
     ("Room Revenue", "accomodation, accommodation, checkout, upselling, check in, show"),
 ]
 DEFAULT_FALLBACK = "Other Revenue"
-DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company, tips"
-EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company / tips"
+DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company"
+EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company"
 
 # Frasa ini dihapus dulu sebelum pengecekan "exclude" (supaya tidak terbuang karena kata 'tax').
 KEEP_PHRASES = ["miscellaneous w/ tax"]
@@ -118,7 +118,7 @@ def to_num(s):
     return -v if neg else v
 
 
-ROW_COLS = ["Hal", "Code", "Description", "Currency", "Debit", "Credit", "Net"]
+ROW_COLS = ["Hal", "Code", "Description", "Currency", "Debit", "Credit", "Net", "Teks"]
 LOG_COLS = ["Hal", "Jenis", "Code", "Teks"]
 
 
@@ -162,6 +162,7 @@ def parse_pdf(data: bytes):
                             "Debit": debit,
                             "Credit": credit,
                             "Net": debit - credit,
+                            "Teks": line,
                         }
                     )
                     log.append({"Hal": pno, "Jenis": "Baris", "Code": cur_code, "Teks": line})
@@ -326,7 +327,9 @@ audit = (
 audit["Kategori"] = audit["Kategori"].where(audit["Status"] == STATUS_OK, "-")
 audit = audit.rename(columns={"Keyword": "Keyword cocok"})
 
-tab_sum, tab_code, tab_audit = st.tabs(["Ringkasan per Kategori", "Rincian per Kode", "🔎 Audit & Diagnostik"])
+tab_sum, tab_code, tab_detail, tab_audit = st.tabs(
+    ["Ringkasan per Kategori", "Rincian per Kode", "Baris detail", "🔎 Audit & Diagnostik"]
+)
 
 with tab_sum:
     st.dataframe(summary.style.format(fmt), use_container_width=True, hide_index=True)
@@ -335,6 +338,20 @@ with tab_code:
     pick = st.selectbox("Filter kategori", ["Semua"] + summary["Kategori"].tolist())
     view = by_code if pick == "Semua" else by_code[by_code["Kategori"] == pick]
     st.dataframe(view.style.format(fmt), use_container_width=True, hide_index=True)
+
+with tab_detail:
+    st.caption("Setiap baris transaksi yang dibaca beserta teks aslinya, untuk dicocokkan dengan PDF.")
+    k = st.selectbox("Kategori", ["Semua"] + sorted(work["Kategori"].unique()), key="det_kat")
+    sub = work if k == "Semua" else work[work["Kategori"] == k]
+    c = st.selectbox("Kode transaksi", ["Semua"] + sorted(sub["Code"].unique()), key="det_code")
+    if c != "Semua":
+        sub = sub[sub["Code"] == c]
+    st.caption(f"{len(sub):,} baris | Total Net: {sub['Net'].sum():,.{dec}f}")
+    st.dataframe(
+        sub[["Hal", "Code", "Description", "Debit", "Credit", "Net", "Teks"]].style.format(fmt),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 with tab_audit:
     st.caption(
