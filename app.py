@@ -20,29 +20,16 @@ DEFAULT_RULES = [
     ("Wedding", "wedding"),
     ("Spa", "spa"),
     ("Guest Laundry", "laundry"),
-    ("Room Revenue", "accomodation, checkout, upselling, check in, show"),
+    ("Room Revenue", "accomodation, accommodation, checkout, upselling, check in, show"),
 ]
 DEFAULT_FALLBACK = "Other Revenue"
 DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company"
 EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company"
 
+# Frasa yang dihapus dulu sebelum pengecekan "exclude",
+# supaya "miscellaneous w/ tax" tidak ikut terbuang gara-gara kata "tax".
 KEEP_PHRASES = ["miscellaneous w/ tax"]
 
-
-def get_category(description, rules, fallback, exclude_kws):
-    desc_lower = description.lower()
-
-    check_text = desc_lower
-    for p in KEEP_PHRASES:
-        check_text = check_text.replace(p, " ")
-
-    if is_excluded(check_text, exclude_kws):
-        return EXCLUDED_LABEL
-
-    for name, kws in rules:
-        if any(kw in desc_lower for kw in kws):
-            return name
-    return fallback
 
 def default_rules_df():
     return pd.DataFrame(DEFAULT_RULES, columns=["Kategori", "Keyword"])
@@ -73,9 +60,15 @@ def is_excluded(description, exclude_kws):
 
 
 def get_category(description, rules, fallback, exclude_kws):
-    if is_excluded(description, exclude_kws):
-        return EXCLUDED_LABEL
     desc_lower = description.lower()
+
+    check_text = desc_lower
+    for p in KEEP_PHRASES:
+        check_text = check_text.replace(p, " ")
+
+    if is_excluded(check_text, exclude_kws):
+        return EXCLUDED_LABEL
+
     for name, kws in rules:
         if any(kw in desc_lower for kw in kws):
             return name
@@ -222,6 +215,12 @@ work = df[(df["Kategori"] != EXCLUDED_LABEL) & ~df["Code"].apply(is_non_revenue)
 if work.empty:
     st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, dan Pembayaran dikeluarkan.")
     st.stop()
+
+# Pengecekan cepat: bandingkan dengan total di PDF kalau ada selisih
+st.caption(
+    f"Baris terbaca: {len(df):,} | Baris dihitung sebagai revenue: {len(work):,} | "
+    f"Total Net revenue: {work['Net'].sum():,.0f}"
+)
 
 fmt = {"Debit": "{:,.0f}", "Credit": "{:,.0f}", "Net": "{:,.0f}"}
 
