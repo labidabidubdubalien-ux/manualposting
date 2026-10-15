@@ -16,7 +16,7 @@ DEFAULT_RULES = [
     ("The Lounge", "lobby lounge"),
     ("In-Room Dining", "room service"),
     ("Minibar", "minibar"),
-    ("Banquet", "banquet"),
+    ("Banquet", "gen banquet"),
     ("Wedding", "wedding"),
     ("Spa", "spa"),
     ("Guest Laundry", "laundry"),
