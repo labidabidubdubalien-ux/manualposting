@@ -17,7 +17,7 @@ DEFAULT_RULES = [
     ("The Lounge", "lobby lounge"),
     ("In-Room Dining", "room service"),
     ("Minibar", "minibar"),
-    ("Banquet", "banquet"),
+    ("Banquet", "gen banquet"),
     ("Wedding", "wedding"),
     ("Spa", "spa"),
     ("Guest Laundry", "laundry"),
@@ -105,6 +105,10 @@ def is_non_revenue(code):
 AMT = r"\(?-?\s?\d[\d,]*(?:\.\d+)?\)?-?"
 DATE_RE = re.compile(r"^\d{2}-\d{2}-\d{2,4}\s+\d{2}:\d{2}\b")
 HEADER_RE = re.compile(r"^Transaction Code\s+(\d{3,5})\b\s*(.*)$", re.IGNORECASE)
+# Di hasil ekstraksi, baris total sering tertulis 'Transaction CodeTotal' (tanpa spasi)
+TOTAL_RE = re.compile(rf"^Transaction Code\s*Total\s+({AMT})\s+({AMT})\s*$", re.IGNORECASE)
+# Kode transaksi di baris TIDAK dipakai (kadang menempel ke kolom nama: 'LAUN6080'),
+# kode diambil dari header 'Transaction Code xxxx'.
 ROW_RE = re.compile(
     rf"^\d{{2}}-\d{{2}}-\d{{2,4}}\s+\d{{2}}:\d{{2}}\s+.*?\s(IDR|USD\S*)\s+({AMT})\s+({AMT})(?:\s+\S+)*$"
 )
@@ -119,18 +123,20 @@ def to_num(s):
 
 
 ROW_COLS = ["Hal", "Code", "Description", "Currency", "Debit", "Credit", "Net", "Teks"]
+TOTAL_COLS = ["Hal", "Code", "Debit", "Credit"]
 LOG_COLS = ["Hal", "Jenis", "Code", "Teks"]
 
 
 @st.cache_data(show_spinner=False)
 def parse_pdf(data: bytes):
     """
-    Baca PDF sekali saja. Return:
-      rows : transaksi yang berhasil dibaca
-      log  : semua baris teks + jenisnya (Header / Baris / GAGAL / Lain), untuk audit
+    Baca PDF sekali saja. Return (rows, totals, log):
+      rows   : transaksi yang berhasil dibaca
+      totals : baris 'Transaction Code Total' yang tercetak di PDF (untuk rekonsiliasi)
+      log    : semua baris teks + jenisnya (Header / Baris / Total / GAGAL / Lain), untuk audit
     Baris yang diawali tanggal+jam tapi gagal dibaca ditandai 'GAGAL', bukan dibuang diam-diam.
     """
-    rows, log = [], []
+    rows, totals, log = [], [], []
     cur_code, cur_desc = None, ""
 
     with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -144,6 +150,15 @@ def parse_pdf(data: bytes):
                 if m:
                     cur_code, cur_desc = m.group(1), m.group(2).strip()
                     log.append({"Hal": pno, "Jenis": "Header", "Code": cur_code, "Teks": line})
+                    continue
+
+                m = TOTAL_RE.match(line)
+                if m:
+                    if cur_code:
+                        totals.append(
+                            {"Hal": pno, "Code": cur_code, "Debit": to_num(m.group(1)), "Credit": to_num(m.group(2))}
+                        )
+                    log.append({"Hal": pno, "Jenis": "Total", "Code": cur_code, "Teks": line})
                     continue
 
                 if not DATE_RE.match(line):
@@ -169,18 +184,82 @@ def parse_pdf(data: bytes):
                 else:
                     log.append({"Hal": pno, "Jenis": "GAGAL", "Code": cur_code, "Teks": line})
 
-    return pd.DataFrame(rows, columns=ROW_COLS), pd.DataFrame(log, columns=LOG_COLS)
-
-
-def make_fmt(frame):
-    """Tampilkan tanpa desimal kalau semua angka bulat, selain itu 2 desimal."""
-    cols = ["Debit", "Credit", "Net"]
-    dec = 0 if ((frame[cols] % 1) == 0).all().all() else 2
-    return dec, {c: f"{{:,.{dec}f}}" for c in cols}
+    return (
+        pd.DataFrame(rows, columns=ROW_COLS),
+        pd.DataFrame(totals, columns=TOTAL_COLS),
+        pd.DataFrame(log, columns=LOG_COLS),
+    )
 
 
 # ------------------------------------------------------------------
-# 3. UI
+# 3. PERHITUNGAN
+# ------------------------------------------------------------------
+def build_tables(df, totals, rules, fallback, exclude_kws, whole_word):
+    """
+    Return (df, per_kode, summary, by_code, audit).
+    per_kode : satu baris per kode transaksi (jumlah baris + total PDF + selisih)
+    Angka (Debit/Credit/Net) diambil langsung dari baris 'Transaction Code Total' di PDF.
+    Kalau sebuah kode tidak punya baris total, terpaksa memakai jumlah baris (ditandai di kolom 'Sumber').
+    """
+    df = df.copy()
+    cls = {d: classify(d, rules, fallback, exclude_kws, whole_word) for d in df["Description"].unique()}
+    df["Kategori"] = df["Description"].map(lambda d: cls[d][0])
+    df["Keyword"] = df["Description"].map(lambda d: cls[d][1])
+
+    df["Status"] = STATUS_OK
+    df.loc[df["Code"].apply(is_non_revenue), "Status"] = STATUS_NONREV
+    df.loc[df["Kategori"] == EXCLUDED_LABEL, "Status"] = STATUS_EXCL
+
+    per_kode = (
+        df.groupby("Code", sort=True)
+        .agg(
+            Description=("Description", "first"),
+            Status=("Status", "first"),
+            Kategori=("Kategori", "first"),
+            Keyword=("Keyword", "first"),
+            Baris=("Net", "size"),
+            D_baris=("Debit", "sum"),
+            C_baris=("Credit", "sum"),
+        )
+        .reset_index()
+    )
+
+    pdf_tot = totals.groupby("Code")[["Debit", "Credit"]].sum()
+    per_kode["D_pdf"] = per_kode["Code"].map(pdf_tot["Debit"])
+    per_kode["C_pdf"] = per_kode["Code"].map(pdf_tot["Credit"])
+    has_pdf = per_kode["D_pdf"].notna()
+
+    per_kode["Net baris"] = per_kode["D_baris"] - per_kode["C_baris"]
+    per_kode["Net PDF"] = per_kode["D_pdf"] - per_kode["C_pdf"]
+    per_kode["Selisih"] = per_kode["Net baris"] - per_kode["Net PDF"]
+
+    per_kode["Sumber"] = has_pdf.map({True: "Total PDF", False: "Jumlah baris"})
+    per_kode["Debit"] = per_kode["D_pdf"].where(has_pdf, per_kode["D_baris"])
+    per_kode["Credit"] = per_kode["C_pdf"].where(has_pdf, per_kode["C_baris"])
+    per_kode["Net"] = per_kode["Debit"] - per_kode["Credit"]
+
+    ok = per_kode[per_kode["Status"] == STATUS_OK]
+    summary = (
+        ok.groupby("Kategori")[["Debit", "Credit", "Net"]].sum()
+        .sort_values("Net", ascending=False).reset_index()
+    )
+    by_code = ok[["Kategori", "Code", "Description", "Debit", "Credit", "Net"]].sort_values(["Kategori", "Code"])
+
+    audit = per_kode[
+        ["Code", "Description", "Status", "Kategori", "Keyword", "Sumber", "Baris", "Net baris", "Net PDF", "Selisih"]
+    ].rename(columns={"Keyword": "Keyword cocok"})
+    audit["Kategori"] = audit["Kategori"].where(audit["Status"] == STATUS_OK, "-")
+
+    return df, per_kode, summary, by_code, audit
+
+
+def decimals_for(df):
+    """0 desimal kalau semua angka bulat, selain itu 2 desimal."""
+    return 0 if ((df[["Debit", "Credit", "Net"]] % 1) == 0).all().all() else 2
+
+
+# ------------------------------------------------------------------
+# 4. UI
 # ------------------------------------------------------------------
 st.title("📊 Manual Posting Summarizer")
 st.caption("Upload PDF *Journal by Cashier and Transaction Code* untuk dijumlahkan per kategori.")
@@ -269,7 +348,7 @@ if not uploaded:
     st.stop()
 
 with st.spinner("Membaca PDF..."):
-    df, log = parse_pdf(uploaded.getvalue())
+    df, totals, log = parse_pdf(uploaded.getvalue())
 
 if df.empty:
     st.error(
@@ -280,52 +359,36 @@ if df.empty:
         st.dataframe(log.head(300), use_container_width=True, hide_index=True)
     st.stop()
 
-# ---- Kategori & status tiap baris ----
-cls = {d: classify(d, rules, fallback, exclude_kws, whole_word) for d in df["Description"].unique()}
-df["Kategori"] = df["Description"].map(lambda d: cls[d][0])
-df["Keyword"] = df["Description"].map(lambda d: cls[d][1])
-
-df["Status"] = STATUS_OK
-df.loc[df["Code"].apply(is_non_revenue), "Status"] = STATUS_NONREV
-df.loc[df["Kategori"] == EXCLUDED_LABEL, "Status"] = STATUS_EXCL
-
+df, per_kode, summary, by_code, audit = build_tables(
+    df, totals, rules, fallback, exclude_kws, whole_word
+)
 work = df[df["Status"] == STATUS_OK]
-dec, fmt = make_fmt(df)
+dec = decimals_for(df)
+num_fmt = f"{{:,.{dec}f}}"
+fmt = {c: num_fmt for c in ["Debit", "Credit", "Net"]}
+fmt_audit = {c: num_fmt for c in ["Net baris", "Net PDF", "Selisih"]}
 
 # ---- Ringkasan status pembacaan ----
 n_gagal = int((log["Jenis"] == "GAGAL").sum())
+tanpa_total = per_kode[per_kode["Sumber"] == "Jumlah baris"]
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Kode transaksi (header)", f"{df['Code'].nunique():,}")
-m2.metric("Baris terbaca", f"{len(df):,}")
-m3.metric("Baris GAGAL terbaca", f"{n_gagal:,}")
-m4.metric("Total Net revenue", f"{work['Net'].sum():,.{dec}f}")
+m1.metric("Baris terbaca", f"{len(df):,}")
+m2.metric("Baris GAGAL terbaca", f"{n_gagal:,}")
+m3.metric("Kode tanpa total di PDF", f"{len(tanpa_total):,}")
+m4.metric("Total Net revenue", f"{summary['Net'].sum():,.{dec}f}")
 
 if n_gagal:
     st.warning(
         f"{n_gagal} baris transaksi tidak cocok dengan format yang diharapkan dan **tidak ikut dihitung**. "
         "Lihat tab *Audit & Diagnostik*."
     )
-if (df["Currency"] != "IDR").any():
-    st.warning("Ada baris non-IDR (mis. USD). Angkanya dijumlahkan apa adanya, tanpa konversi kurs.")
+if len(tanpa_total):
+    st.warning(
+        "Kode " + ", ".join(tanpa_total["Code"].tolist()) + " tidak punya baris 'Transaction Code Total' di PDF, "
+        "jadi angkanya terpaksa dijumlahkan dari baris."
+    )
 if work.empty:
     st.warning("Tidak ada transaksi revenue setelah Tax, Service Charge, Transfer, dan Pembayaran dikeluarkan.")
-
-# ---- Tabel hasil ----
-summary = (
-    work.groupby("Kategori")[["Debit", "Credit", "Net"]].sum()
-    .sort_values("Net", ascending=False).reset_index()
-)
-by_code = (
-    work.groupby(["Kategori", "Code", "Description"])[["Debit", "Credit", "Net"]]
-    .sum().reset_index().sort_values(["Kategori", "Code"])
-)
-audit = (
-    df.groupby(["Code", "Description", "Status", "Kategori", "Keyword"], dropna=False)
-    .agg(Baris=("Net", "size"), Debit=("Debit", "sum"), Credit=("Credit", "sum"), Net=("Net", "sum"))
-    .reset_index().sort_values("Code")
-)
-audit["Kategori"] = audit["Kategori"].where(audit["Status"] == STATUS_OK, "-")
-audit = audit.rename(columns={"Keyword": "Keyword cocok"})
 
 tab_sum, tab_code, tab_detail, tab_audit = st.tabs(
     ["Ringkasan per Kategori", "Rincian per Kode", "Baris detail", "🔎 Audit & Diagnostik"]
@@ -340,13 +403,16 @@ with tab_code:
     st.dataframe(view.style.format(fmt), use_container_width=True, hide_index=True)
 
 with tab_detail:
-    st.caption("Setiap baris transaksi yang dibaca beserta teks aslinya, untuk dicocokkan dengan PDF.")
+    st.caption(
+        "Setiap baris transaksi yang dibaca beserta teks aslinya, untuk dicocokkan dengan PDF. "
+        "Tab ini hanya untuk pengecekan baris. Angka di Ringkasan memakai Total PDF."
+    )
     k = st.selectbox("Kategori", ["Semua"] + sorted(work["Kategori"].unique()), key="det_kat")
     sub = work if k == "Semua" else work[work["Kategori"] == k]
     c = st.selectbox("Kode transaksi", ["Semua"] + sorted(sub["Code"].unique()), key="det_code")
     if c != "Semua":
         sub = sub[sub["Code"] == c]
-    st.caption(f"{len(sub):,} baris | Total Net: {sub['Net'].sum():,.{dec}f}")
+    st.caption(f"{len(sub):,} baris | Total Net (jumlah baris): {sub['Net'].sum():,.{dec}f}")
     st.dataframe(
         sub[["Hal", "Code", "Description", "Debit", "Credit", "Net", "Teks"]].style.format(fmt),
         use_container_width=True,
@@ -358,6 +424,15 @@ with tab_audit:
         "Semua kode transaksi yang terbaca, termasuk yang TIDAK dihitung, lengkap dengan alasannya. "
         "Kalau ada transaksi yang 'hilang', cari di sini."
     )
+
+    selisih_kode = audit[audit["Selisih"].fillna(0).abs() > 0.005]
+    st.markdown(f"**Kode yang jumlah barisnya berbeda dengan total PDF (informasi): {len(selisih_kode)}**")
+    if selisih_kode.empty:
+        st.success("Jumlah baris cocok dengan total PDF di semua kode.")
+    else:
+        st.caption("Aplikasi memakai Total PDF. Selisih ini biasanya pembulatan di sistem sumber.")
+        st.dataframe(selisih_kode.style.format(fmt_audit, na_rep="-"), use_container_width=True, hide_index=True)
+
     q = norm(st.text_input("Cari kata (mis. banquet)", key="audit_q"))
     all_status = [STATUS_OK, STATUS_EXCL, STATUS_NONREV]
     status_pick = st.multiselect("Status", all_status, default=all_status)
@@ -369,7 +444,7 @@ with tab_audit:
         )
         view_a = view_a[hit]
     st.markdown("**Status tiap kode transaksi**")
-    st.dataframe(view_a.style.format(fmt), use_container_width=True, hide_index=True)
+    st.dataframe(view_a.style.format(fmt_audit, na_rep="-"), use_container_width=True, hide_index=True)
 
     gagal = log[log["Jenis"] == "GAGAL"]
     st.markdown(f"**Baris gagal terbaca: {len(gagal)}**")
