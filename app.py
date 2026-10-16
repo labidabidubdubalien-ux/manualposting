@@ -24,8 +24,8 @@ DEFAULT_RULES = [
     ("Room Revenue", "accomodation, accommodation, checkout, upselling, check in, show"),
 ]
 DEFAULT_FALLBACK = "Other Revenue"
-DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company"
-EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company"
+DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company, unclaimed"
+EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company / unclaimed"
 
 # Frasa ini dihapus dulu sebelum pengecekan "exclude" (supaya tidak terbuang karena kata 'tax').
 KEEP_PHRASES = ["miscellaneous w/ tax"]
