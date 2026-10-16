@@ -24,8 +24,8 @@ DEFAULT_RULES = [
     ("Room Revenue", "accomodation, accommodation, checkout, upselling, check in, show"),
 ]
 DEFAULT_FALLBACK = "Other Revenue"
-DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company, unclaimed"
-EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company / unclaimed"
+DEFAULT_EXCLUDE = "tax, service charge, transportation, rounding, bf package, payable others, company"
+EXCLUDED_LABEL = "Tax / Service Charge / Transportation / Rounding / bf package / payable others / company"
 
 # Frasa ini dihapus dulu sebelum pengecekan "exclude" (supaya tidak terbuang karena kata 'tax').
 KEEP_PHRASES = ["miscellaneous w/ tax"]
@@ -343,25 +343,11 @@ rules = parse_rules(edited)
 exclude_kws = split_keywords(exclude_text)
 
 uploaded = st.file_uploader("Upload PDF", type="pdf")
-
 if not uploaded:
-    ss.processed = False  # Reset jika file dihapus
     st.info("Silakan upload file PDF terlebih dahulu.")
     st.stop()
 
-# Tombol untuk memproses PDF
-if st.button("🚀 Proses PDF", type="primary", use_container_width=True):
-    ss.processed = True
-
-# Jika belum diklik, hentikan eksekusi di sini
-if not ss.processed:
-    st.warning("Silakan klik tombol **'Proses PDF'** di atas untuk mulai menganalisis dokumen.")
-    st.stop()
-
-# ------------------------------------------------------------------
-# PROSES UTAMA (Eksekusi setelah tombol diklik)
-# ------------------------------------------------------------------
-with st.spinner("Membaca dan memproses PDF..."):
+with st.spinner("Membaca PDF..."):
     df, totals, log = parse_pdf(uploaded.getvalue())
 
 if df.empty:
